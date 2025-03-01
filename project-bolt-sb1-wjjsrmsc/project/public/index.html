@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Find My Friends</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <style>
+        body { margin: 0; padding: 20px; font-family: Arial; background: #f0f2f5; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        #map { height: 400px; width: 100%; margin: 20px 0; border-radius: 8px; }
+        button { background: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin: 5px; }
+        .share-link { margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 4px; word-break: break-all; }
+        #accuracy { margin-top: 10px; color: #666; }
+        .accurate { color: #4CAF50; }
+        .inaccurate { color: #f44336; }
+        #qrcode { text-align: center; margin: 15px 0; }
+        .share-options { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Find My Friends</h2>
+        <button onclick="generateLink()">Generate Tracking Link</button>
+        <div id="shareLink" class="share-link" style="display:none;"></div>
+        <div id="qrcode"></div>
+        <div id="map"></div>
+        <div id="status"></div>
+        <div id="accuracy"></div>
+    </div>
+
+    <script>
+        let map;
+        let marker;
+        let watchId;
+        let circle;
+        const REQUIRED_ACCURACY = 20; // meters
+        let lastAccuratePosition = null;
+        
+        function initMap(lat = 0, lng = 0) {
+            try {
+                map = L.map('map').setView([lat, lng], 15);
+                
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors'
+                }).addTo(map);
+                
+                marker = L.marker([lat, lng]).addTo(map);
+                circle = L.circle([lat, lng], { 
+                    radius: 0,
+                    color: '#f44336',
+                    fillColor: '#f44336',
+                    fillOpacity: 0.2
+                }).addTo(map);
+            } catch (error) {
+                console.error('Error initializing map:', error);
+                document.getElementById('status').textContent = 'Error loading map. Please try again later.';
+            }
+        }
+
+        function generateLink() {
+            const shareLink = document.getElementById('shareLink');
+            const trackingUrl = `${window.location.href}?track=1&t=${Date.now()}`;
+            
+            shareLink.style.display = 'block';
+            shareLink.innerHTML = `
+                <p>Share this link with your friend:</p>
+                <p style="color:#1a73e8">${trackingUrl}</p>
+                <div class="share-options">
+                    <button onclick="copyToClipboard('${trackingUrl}')">Copy Link</button>
+                    <button onclick="shareViaWhatsApp('${trackingUrl}')">Share via WhatsApp</button>
+                </div>
+            `;
+
+            // Generate QR code
+            const qrcodeDiv = document.getElementById('qrcode');
+            qrcodeDiv.innerHTML = ''; // Clear previous QR code
+            QRCode.toCanvas(qrcodeDiv, trackingUrl, function (error) {
+                if (error) console.error(error);
+            });
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Link copied! Send this to your friend.');
+            });
+        }
+
+        function shareViaWhatsApp(url) {
+            window.open(`https://wa.me/?text=${encodeURIComponent(url)}`, '_blank');
+        }
+
+        function updateLocation(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            const accuracy = position.coords.accuracy;
+            
+            // Update accuracy display
+            const accuracyElement = document.getElementById('accuracy');
+            const isAccurate = accuracy <= REQUIRED_ACCURACY;
+            accuracyElement.textContent = `Accuracy: ${Math.round(accuracy)} meters`;
+            accuracyElement.className = isAccurate ? 'accurate' : 'inaccurate';
+
+            // Update status
+            document.getElementById('status').textContent = isAccurate ? 
+                'High accuracy location obtained!' : 
+                'Waiting for better accuracy...';
+
+            // Update marker and circle
+            marker.setLatLng([lat, lng]);
+            circle.setLatLng([lat, lng]);
+            circle.setRadius(accuracy);
+            circle.setStyle({
+                color: isAccurate ? '#4CAF50' : '#f44336',
+                fillColor: isAccurate ? '#4CAF50' : '#f44336'
+            });
+            
+            // Only center map and send to server if accuracy is good enough
+            if (isAccurate) {
+                map.setView([lat, lng]);
+                lastAccuratePosition = position;
+                
+                // Send to server
+                fetch('/location', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        id: new URLSearchParams(window.location.search).get('t'),
+                        lat, 
+                        lng,
+                        accuracy
+                    })
+                });
+            }
+        }
+
+        function trackLocation() {
+            if (!navigator.geolocation) {
+                alert('Geolocation is not supported by your browser');
+                return;
+            }
+
+            document.getElementById('status').textContent = 'Obtaining high accuracy location...';
+
+            // Get initial position
+            navigator.geolocation.getCurrentPosition(
+                updateLocation,
+                (error) => {
+                    document.getElementById('status').textContent = 
+                        'Error getting location: ' + error.message;
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 30000,
+                    maximumAge: 0
+                }
+            );
+
+            // Start continuous tracking
+            watchId = navigator.geolocation.watchPosition(
+                updateLocation,
+                (error) => {
+                    document.getElementById('status').textContent = 
+                        'Error tracking location: ' + error.message;
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 30000,
+                    maximumAge: 0
+                }
+            );
+        }
+
+        window.onload = function() {
+            initMap();
+            
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('track')) {
+                trackLocation();
+            }
+        };
+
+        // Cleanup on page unload
+        window.onbeforeunload = function() {
+            if (watchId) {
+                navigator.geolocation.clearWatch(watchId);
+            }
+        };
+    </script>
+</body>
+</html>
